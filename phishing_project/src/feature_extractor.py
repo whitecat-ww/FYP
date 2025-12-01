@@ -18,9 +18,6 @@ def contains_ip(host):
     except:
         return False
 
-def url_length(url):
-    return len(url)
-
 def count_subdomains(url):
     ext = tldextract.extract(url)
     sub = ext.subdomain
@@ -29,14 +26,18 @@ def count_subdomains(url):
     return len(sub.split('.'))
 
 def count_suspicious_tokens(url):
-    tokens = ['login', 'signin', 'secure', 'update', 'verify', 'account', 'confirm']
+    # 增加了一些常见的钓鱼词汇
+    tokens = ['login', 'signin', 'secure', 'update', 'verify', 'account', 'confirm', 
+              'banking', 'alert', 'client', 'service', 'pay', 'free', 'bonus']
     return sum(1 for t in tokens if t in url.lower())
 
 def has_at_symbol(url):
     return int('@' in url)
 
 def count_hyphen(url):
-    return url.count('-')
+    # 只计算 hostname 里的连字符
+    parsed = urlparse(url)
+    return parsed.netloc.count('-')
 
 def count_digits(url):
     return sum(c.isdigit() for c in url)
@@ -57,7 +58,6 @@ def get_domain_age_days(domain):
         if cd is None:
             return -1
         if isinstance(cd, str):
-            # try common format
             try:
                 cd = datetime.strptime(cd.split()[0], "%Y-%m-%d")
             except:
@@ -68,7 +68,7 @@ def get_domain_age_days(domain):
         return -1
 
 # SSL info via socket
-def get_ssl_days_left(hostname, port=443, timeout=5):
+def get_ssl_days_left(hostname, port=443, timeout=3):
     try:
         context = ssl.create_default_context()
         with socket.create_connection((hostname, port), timeout=timeout) as sock:
@@ -85,14 +85,13 @@ def get_ssl_days_left(hostname, port=443, timeout=5):
         return -999
     return -999
 
-# HTML content analysis - fetch page safely
-def safe_fetch(url, timeout=6):
+# HTML content analysis
+def safe_fetch(url, timeout=5):
     headers = {
-        'User-Agent': 'Mozilla/5.0 (compatible; PhishDetector/1.0; +https://example.org/bot)'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     }
     try:
-        resp = requests.get(url, headers=headers, timeout=timeout, verify=True)
-        # avoid extremely large responses
+        resp = requests.get(url, headers=headers, timeout=timeout, verify=False)
         if resp is not None and len(resp.content) > 3_000_000:
             return None
         return resp
@@ -100,7 +99,6 @@ def safe_fetch(url, timeout=6):
         return None
 
 def analyze_html(url):
-    """Return dict of HTML-based features."""
     res = safe_fetch(url)
     if res is None:
         return {
@@ -109,7 +107,8 @@ def analyze_html(url):
             'num_iframes': 0,
             'num_scripts': 0,
             'meta_refresh': 0,
-            'suspicious_js': 0
+            'suspicious_js': 0,
+            'ext_favicon': 0
         }
     try:
         soup = BeautifulSoup(res.text, 'lxml')
@@ -122,7 +121,6 @@ def analyze_html(url):
     for f in forms:
         inputs = f.find_all('input')
         num_input += len(inputs)
-        # check if form has password field -> login form
         if any(i.get('type') and i.get('type').lower() == 'password' for i in inputs):
             has_login = 1
 
@@ -131,7 +129,6 @@ def analyze_html(url):
     meta = soup.find_all('meta', attrs={'http-equiv': 'refresh'})
     meta_refresh = 1 if meta else 0
 
-    # suspicious JS heuristics (very naive)
     suspicious_js = 0
     for s in scripts:
         text = ""
@@ -139,8 +136,20 @@ def analyze_html(url):
             text = s.string or ""
         except:
             text = ""
-        if 'document.oncontextmenu' in text or 'eval(' in text or 'disable' in text:
+        if 'document.oncontextmenu' in text or 'eval(' in text:
             suspicious_js = 1
+            break
+            
+    # 检查 favicon 是否引用了其他域名
+    ext_favicon = 0
+    links = soup.find_all('link', rel=lambda x: x and 'icon' in x.lower())
+    domain_info = tldextract.extract(url)
+    base_domain = f"{domain_info.domain}.{domain_info.suffix}"
+    
+    for l in links:
+        href = l.get('href', '')
+        if href.startswith('http') and base_domain not in href:
+            ext_favicon = 1
             break
 
     return {
@@ -149,7 +158,8 @@ def analyze_html(url):
         'num_iframes': len(iframes),
         'num_scripts': len(scripts),
         'meta_refresh': meta_refresh,
-        'suspicious_js': suspicious_js
+        'suspicious_js': suspicious_js,
+        'ext_favicon': ext_favicon
     }
 
 # main feature extraction
@@ -157,12 +167,20 @@ def extract_features(url):
     f = {}
     if not url.startswith(('http://', 'https://')):
         url = 'http://' + url
+    
     parsed = urlparse(url)
     hostname = parsed.hostname or ''
+    path = parsed.path or ''
+    query = parsed.query or ''
+    
     domain_info = tldextract.extract(url)
     domain = '.'.join(part for part in [domain_info.domain, domain_info.suffix] if part)
 
-    f['url_length'] = url_length(url)
+    # 拆分长度特征
+    f['hostname_length'] = len(hostname)
+    f['path_length'] = len(path) + len(query)
+    f['double_slash_in_path'] = path.count('//')
+    
     f['has_ip'] = int(contains_ip(hostname))
     f['subdomain_cnt'] = count_subdomains(url)
     f['suspicious_tokens'] = count_suspicious_tokens(url)
@@ -170,27 +188,27 @@ def extract_features(url):
     f['hyphen_count'] = count_hyphen(url)
     f['digit_count'] = count_digits(url)
     f['entropy'] = entropy(url)
-    # domain/WHOIS
+    f['is_https'] = 1 if parsed.scheme == 'https' else 0
+
     f['domain_age_days'] = get_domain_age_days(domain)
-    # SSL
-    ssl_days = get_ssl_days_left(hostname) if hostname else -999
-    f['ssl_days_left'] = ssl_days
-    # HTML features
+    f['ssl_days_left'] = get_ssl_days_left(hostname) if hostname else -999
+    
     html_feats = analyze_html(url)
     f.update(html_feats)
     return f
 
-# Example: feature vector to list in fixed order
+# 更新后的特征列表
 FEATURE_ORDER = [
-    'url_length', 'has_ip', 'subdomain_cnt', 'suspicious_tokens', 'has_at',
+    'hostname_length', 'path_length', 'double_slash_in_path', 'is_https',
+    'has_ip', 'subdomain_cnt', 'suspicious_tokens', 'has_at',
     'hyphen_count', 'digit_count', 'entropy', 'domain_age_days', 'ssl_days_left',
-    'has_login_form', 'num_inputs', 'num_iframes', 'num_scripts', 'meta_refresh', 'suspicious_js'
+    'has_login_form', 'num_inputs', 'num_iframes', 'num_scripts', 'meta_refresh', 
+    'suspicious_js', 'ext_favicon'
 ]
 
 def features_to_vector(feat_dict):
     return [feat_dict.get(k, 0) for k in FEATURE_ORDER]
 
 if __name__ == "__main__":
-    # quick local test (no network calls here)
     sample = "https://example.com/login"
     print(extract_features(sample))

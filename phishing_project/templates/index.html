@@ -16,11 +16,12 @@
     {% if result %}
       <div class="result {% if result.label=='PHISHING' %}phish{% else %}legit{% endif %}">
         <strong>Result: {{result.label}}</strong>
-        {% if result.probability %}
-          <div>Confidence: {{ (result.probability * 100) | round(2) }}%</div>
+        {% if result.probability is not none %}
+          <div>Phishing Risk Score: {{ (result.probability * 100) | round(2) }}%</div>
         {% endif %}
       </div>
 
+      {% if details %}
       <h3>Feature details (for explainability)</h3>
       <table>
         <tr><th>Feature</th><th>Value</th></tr>
@@ -28,6 +29,7 @@
         <tr><td>{{k}}</td><td>{{v}}</td></tr>
         {% endfor %}
       </table>
+      {% endif %}
     {% endif %}
   </div>
 </body>

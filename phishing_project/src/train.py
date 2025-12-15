@@ -63,20 +63,34 @@ def extract_features_from_df(df):
     
     return feat_df
 
+Python
+
 def impute_missing(df):
-    """缺失值处理"""
+    """
+    升级版缺失值处理：
+    - 保留 -1 (WHOIS失败) 和 -999 (SSL失败) 作为特殊特征 (Failure as Feature)
+    - 只对真正的 NaN 或其他异常值进行中位数插补
+    """
     df = df.copy()
     feature_cols = [c for c in df.columns if c not in ['label', 'url_source']]
     
+    # 定义特定的“失败特征码”，这些我们不想被覆盖
+    failure_codes = [-1, -999]
+
     for col in feature_cols:
-        mask = ~df[col].isin([-1, -999])
-        if mask.any():
-            med = df.loc[mask, col].median()
-            df[col] = df[col].replace([-1, -999], med)
-            df[col] = df[col].fillna(med)
+        # 1. 先把真正的 NaN 填成 0 (或者该列的中位数)
+        # 计算中位数时，要排除掉 failure_codes，以免拉低中位数
+        valid_values = df[~df[col].isin(failure_codes)][col].dropna()
+        if not valid_values.empty:
+            med = valid_values.median()
         else:
-            df[col] = df[col].replace([-1, -999], 0)
-            df[col] = df[col].fillna(0)
+            med = 0
+            
+        # 2. 只填补真正的 NaN，保留 -1 和 -999
+        df[col] = df[col].fillna(med)
+        
+        # 关键修改：删除了原来的 replace 语句，不再把 -1/-999 替换成中位数
+        
     return df
 
 def merge_with_history(new_feat_df):

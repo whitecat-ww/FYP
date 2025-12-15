@@ -9,6 +9,9 @@ import whois
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from datetime import datetime
+from functools import lru_cache
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # --- helper functions ---
 def contains_ip(host):
@@ -90,8 +93,15 @@ def safe_fetch(url, timeout=5):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     }
-    try:
-        resp = requests.get(url, headers=headers, timeout=timeout, verify=False)
+try:
+        # 配置重试策略：总共重试3次，遇到连接错误或500/502等错误时重试
+        session = requests.Session()
+        retry = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount('http://', adapter)
+        session.mount('https://', adapter)
+        
+        resp = session.get(url, headers=headers, timeout=timeout, verify=False)
         if resp is not None and len(resp.content) > 3_000_000:
             return None
         return resp
